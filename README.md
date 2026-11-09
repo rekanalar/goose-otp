@@ -7,7 +7,7 @@ One-time passwords for Goose. The package builds and checks the codes of HOTP (R
 ## Install
 
 ```goose
-import otp from "rekanalar/goose-otp@v0.3.0";
+import otp from "rekanalar/goose-otp@v0.4.0";
 ```
 
 The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the random source. It depends on `rekanalar/goose-encoding@v1.0.0` for base32. Declare both imports in the root file of your program.
@@ -30,6 +30,7 @@ The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the rand
 - **Base32 secrets.** The package reads the text that an app shows: either case, with spaces, with no padding.
 - **Random secrets.** The bytes come from the random source of the operating system.
 - **Steam codes.** Five letters of the Steam alphabet, as `pyotp` and `totp-rs` give them.
+- **The wall clock.** `totp_now` and `totp_verify_now` read the clock. Every other call takes the time as an argument, so a test can fix it.
 - **The time left.** `totp_ttl` gives the seconds that a code stays valid. `totp_next_step` gives the start of the next step.
 - **The `otpauth://` URI.** Build and parse the key URI of Google Authenticator, for TOTP and HOTP.
 
@@ -41,6 +42,7 @@ The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the rand
 | `hotp(out, secret, counter, p)` | Adds the text of the code to `out`. Gives a code |
 | `totp(out, secret, now, p)` | The same for a time in seconds since 1970 |
 | `steam_params()` | The rules of Steam: SHA-1, 5 characters, 30 seconds. Use them with `hotp`, `totp` and the verify calls |
+| `totp_now(out, secret, p)`, `totp_verify_now(secret, code, back, ahead, p)` | The same for the wall clock. They read it from the `os` module |
 | `totp_ttl(now, p)`, `totp_next_step(now, p)` | The seconds left in the step, and the time of the next step |
 | `hotp_value`, `totp_counter` | The number of a code, and the step of a time |
 | `hotp_verify(secret, code, counter, ahead, p)` | Gives the counter that matched, and a code |
@@ -90,7 +92,7 @@ A call that fails leaves the buffer of the caller as it was.
 import std;
 import hash from "github.com/kaitk/goose-hash@v0.0.4";
 import encoding from "rekanalar/goose-encoding@v1.0.0";
-import otp from "rekanalar/goose-otp@v0.3.0";
+import otp from "rekanalar/goose-otp@v0.4.0";
 
 fn main() {
     var secret: u8[>..] = [];
@@ -129,6 +131,5 @@ Risks that stay: the package cannot stop a caller from trying many codes.
 - **Digits from 6 to 9.** `pyotp` takes any count. Go `pquerna/otp` takes 6, 7 and 8. A 31 bit value holds 10 digits with a bias, so the package stops at 9.
 - **A counter is a signed 64 bit number.** RFC 4226 holds an unsigned 64 bit counter. A counter of 2 to the power of 63 or more is not possible.
 - **The random source ends the program.** `random_secret` reads the random source of the operating system. If that source fails, the program ends. It never returns weak bytes.
-- **The package holds no clock.** The caller gives the time in seconds.
 - **SHA-512 is not in `goose-hash`.** The package holds its own pure Goose code. It runs on the Goose rounds only, with no CPU instructions. It is slower than a library on the CPU instructions. A code needs three or four hash calls, so the cost is small.
 - **The package builds a C file of `goose-hash`.** `goose run` builds it once on first use.

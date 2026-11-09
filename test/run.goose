@@ -411,6 +411,20 @@ fn test_step_time() {
     assert(f3 == otp::ERR_BAD_COUNTER);
 }
 
+fn test_clock() {
+    let s = "12345678901234567890";
+    let p = otp::default_params();
+    // The clock is after 2024 and the code of now verifies at now.
+    assert(otp::now_seconds() > 1700000000);
+    var code: u8[>..] = [];
+    assert(otp::totp_now(code, s, p) == otp::ERR_OK && code.len == 6);
+    // A step may end between the two calls, so the window takes one step back.
+    let c, f = otp::totp_verify_now(s, code[..], 1, 0, p);
+    assert(f == otp::ERR_OK);
+    let c2, f2 = otp::totp_verify_now(s, "00000", 1, 0, p);
+    assert(f2 == otp::ERR_BAD_CODE);
+}
+
 fn test_overflow() {
     let s = "12345678901234567890";
     let p = otp::default_params();
@@ -476,6 +490,7 @@ fn main() {
     test_uri_hostile();
     test_overflow();
     test_steam();
+    test_clock();
     test_step_time();
     test_secret_text();
     print("all otp tests pass\n");

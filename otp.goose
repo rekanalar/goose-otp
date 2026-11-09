@@ -11,6 +11,7 @@
 namespace otp;
 
 import std;
+import os;
 import hash from "github.com/kaitk/goose-hash@v0.0.4";
 import encoding from "rekanalar/goose-encoding@v1.0.0";
 import sha512;
@@ -272,6 +273,23 @@ fn totp_verify(secret: const u8[:], code: const u8[:], now: i64, back: i64, ahea
     var first = c - back;
     if first < 0 { first = 0; }
     return verify_range(secret, code, first, last, p);
+}
+
+// now_seconds gives the wall clock in seconds since 1970. It is the
+// time that pyotp now() and totp-rs generate_current use.
+fn now_seconds() -> i64 {
+    return time_ns() / 1000000000;
+}
+
+// totp_now adds the code for the time of the wall clock to the buffer.
+fn totp_now(out: u8[>..]&, secret: const u8[:], p: Params) -> i64 {
+    return totp(out, secret, now_seconds(), p);
+}
+
+// totp_verify_now tests the code against the wall clock, as totp_verify
+// does for a time that the caller gives.
+fn totp_verify_now(secret: const u8[:], code: const u8[:], back: i64, ahead: i64, p: Params) -> i64, i64 {
+    return totp_verify(secret, code, now_seconds(), back, ahead, p);
 }
 
 // secret_decode adds the bytes of a base32 secret to the buffer. It
