@@ -380,8 +380,21 @@ fn test_steam() {
     let wild = otp::digits_text(5, wp);
     assert(wild[8] == '5');
     assert(out.len == 0);
-    // The URI has no form for Steam.
-    assert(otp::uri_build(out, "JBSWY3DPEHPK3PXP", "A", "u", 0, false, p) == otp::ERR_BAD_ALGORITHM);
+    // The URI of Steam names the encoder, as pyotp and pquerna read it.
+    let su = otp::uri_build(out, "JBSWY3DPEHPK3PXP", "Steam", "u", 0, false, p);
+    assert(su == otp::ERR_OK);
+    assert(out == "otpauth://totp/Steam:u?secret=JBSWY3DPEHPK3PXP&issuer=Steam&digits=5&encoder=steam");
+    // The read gives the rules of Steam.
+    var parts: u8[>..] = [];
+    let sc, sr = otp::uri_parse(out[..], parts);
+    assert(sc == otp::ERR_OK && sr.steam && sr.digits == 5 && sr.period == 30);
+    // A digits count that is not 5 is a fault for Steam.
+    var keep: u8[>..] = [1];
+    let s1, _ = otp::uri_parse("otpauth://totp/u?secret=JBSWY3DPEHPK3PXP&digits=6&encoder=steam", keep);
+    assert(s1 == otp::ERR_BAD_URI && keep.len == 1);
+    // An encoder that is not steam is a fault.
+    let s2, _ = otp::uri_parse("otpauth://totp/u?secret=JBSWY3DPEHPK3PXP&encoder=x", keep);
+    assert(s2 == otp::ERR_BAD_URI);
 }
 
 fn test_step_time() {
@@ -472,6 +485,35 @@ fn test_offset_and_key() {
     assert(k2 == otp::ERR_BAD_URI && keep.len == 1);
 }
 
+fn test_steam_uri() {
+    var keep: u8[>..] = [1];
+    // Steam takes SHA-1 only, and no counter, and the key only once.
+    let e1, _ = otp::uri_parse("otpauth://totp/u?secret=JBSWY3DPEHPK3PXP&encoder=steam&algorithm=SHA256", keep);
+    assert(e1 == otp::ERR_BAD_URI);
+    let e2, _ = otp::uri_parse("otpauth://hotp/u?secret=JBSWY3DPEHPK3PXP&encoder=steam&counter=1", keep);
+    assert(e2 == otp::ERR_BAD_URI);
+    let e3, _ = otp::uri_parse("otpauth://totp/u?secret=JBSWY3DPEHPK3PXP&encoder=steam&encoder=steam", keep);
+    assert(e3 == otp::ERR_BAD_URI);
+    let e4, _ = otp::uri_parse("otpauth://totp/u?secret=JBSWY3DPEHPK3PXP&encoder=STEAM", keep);
+    assert(e4 == otp::ERR_BAD_URI && keep.len == 1);
+    // The build refuses rules that the read refuses.
+    var out: u8[>..] = [];
+    var sp = otp::steam_params();
+    sp.period = 60;
+    assert(otp::uri_build(out, "JBSWY3DPEHPK3PXP", "A", "u", 0, false, sp) == otp::ERR_BAD_PERIOD);
+    sp = otp::steam_params();
+    assert(otp::uri_build(out, "JBSWY3DPEHPK3PXP", "A", "u", 5, true, sp) == otp::ERR_BAD_COUNTER);
+    assert(out.len == 0);
+    // The key of a Steam URI holds the rules of Steam, and gives a Steam code.
+    var secret: u8[>..] = [];
+    var q = otp::default_params();
+    let k = otp::key_from_uri("otpauth://totp/u?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&encoder=steam", secret, q);
+    assert(k == otp::ERR_OK && q.steam && q.digits == 5);
+    var code: u8[>..] = [];
+    assert(otp::totp(code, secret[..], 59, q) == otp::ERR_OK);
+    assert(code == "PV9M4");
+}
+
 fn test_overflow() {
     let s = "12345678901234567890";
     let p = otp::default_params();
@@ -538,6 +580,7 @@ fn main() {
     test_overflow();
     test_steam();
     test_clock();
+    test_steam_uri();
     test_offset_and_key();
     test_step_time();
     test_secret_text();

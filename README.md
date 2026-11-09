@@ -7,7 +7,7 @@ One-time passwords for Goose. The package builds and checks the codes of HOTP (R
 ## Install
 
 ```goose
-import otp from "rekanalar/goose-otp@v0.5.0";
+import otp from "rekanalar/goose-otp@v0.6.0";
 ```
 
 The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the random source. It depends on `rekanalar/goose-encoding@v1.0.0` for base32. Declare both imports in the root file of your program.
@@ -67,7 +67,7 @@ The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the rand
 | `period` | The seconds of one TOTP step | 30 |
 | `t0` | The time of step 0, in seconds since 1970 | 0 |
 | `min_secret` | The shortest secret in bytes | 16 |
-| `steam` | Steam codes: SHA-1 only, and `digits` must be 5 | false |
+| `steam` | Steam codes: SHA-1 only, and `digits` must be 5. A URI for these rules names the key `encoder=steam` | false |
 
 ### The codes
 
@@ -95,7 +95,7 @@ A call that fails leaves the buffer of the caller as it was.
 import std;
 import hash from "github.com/kaitk/goose-hash@v0.0.4";
 import encoding from "rekanalar/goose-encoding@v1.0.0";
-import otp from "rekanalar/goose-otp@v0.5.0";
+import otp from "rekanalar/goose-otp@v0.6.0";
 
 fn main() {
     var secret: u8[>..] = [];
@@ -125,10 +125,10 @@ Risks that stay: the package cannot stop a caller from trying many codes.
 
 ## Limits
 
-- **The URI holds no `image` and no `encoder`.** `pyotp` writes the key `image` and reads `encoder=steam`. The package refuses both.
+- **The URI holds no `image`.** `pyotp` writes the key `image`. The package refuses it.
 - **Digits go to 9 in a URI.** `pyotp` takes 6, 7 and 8 only. The Key Uri Format wiki names 6 to 8. The package takes 6 to 9, as for a code.
 - **The URI build checks the form of the secret.** It does not check the minimum length in bytes. `uri_parse` does the same.
-- **Steam has no URI.** `pyotp` reads the key `encoder=steam`. `totp-rs` reads the host `steam` and the algorithm `STEAM`. No standard fixes the form, so the package builds none and refuses to read one.
+- **The Steam URI takes one form.** The package writes and reads the key `encoder=steam`. The Go library `pquerna/otp` and the Python library `pyotp` use that key. The Rust library `totp-rs` uses the host `steam` and the algorithm `STEAM`. The package refuses that form with `ERR_BAD_URI`.
 - **The rules hold a new field.** The field `steam` is new in `Params`. A program that builds `Params` with a literal must set it. `default_params` needs no change.
 - **No MD5.** `pquerna/otp` takes MD5. The package refuses it. MD5 is broken and no app needs it.
 - **Digits from 6 to 9.** `pyotp` takes any count. Go `pquerna/otp` takes 6, 7 and 8. A 31 bit value holds 10 digits with a bias, so the package stops at 9.

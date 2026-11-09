@@ -21,7 +21,6 @@ namespace otp;
 
 import std;
 import encoding from "rekanalar/goose-encoding@v1.0.0";
-import encoding from "rekanalar/goose-encoding@v1.0.0";
 
 // The codes of the faults of the URI.
 const ERR_BAD_URI: i64 = 11;
@@ -60,6 +59,8 @@ struct UriParams {
     period: i64,
     // The counter, or -1 when the query holds none.
     counter: i64,
+    // True when the query names the Steam encoder.
+    steam: bool,
 }
 
 // hex_digit gives the value of a hex digit, or -1.
@@ -183,10 +184,15 @@ fn uri_build(out: u8[>..]&, secret_text: const u8[:], issuer: const u8[:], name:
              counter: i64, has_counter: bool, p: Params) -> i64 {
     if secret_text.len == 0 { return ERR_SHORT_SECRET; }
     if issuer.len == 0 && name.len == 0 { return ERR_NO_ISSUER; }
-    // The URI of Steam is not part of the package.
-    if p.steam { return ERR_BAD_ALGORITHM; }
     if p.algo < ALGO_SHA1 || p.algo > ALGO_SHA512 { return ERR_BAD_ALGORITHM; }
-    if p.digits < 6 || p.digits > 9 { return ERR_BAD_DIGITS; }
+    if p.steam {
+        if p.algo != ALGO_SHA1 { return ERR_BAD_ALGORITHM; }
+        if has_counter { return ERR_BAD_COUNTER; }
+        if p.period != 30 { return ERR_BAD_PERIOD; }
+        if p.digits != 5 { return ERR_BAD_DIGITS; }
+    } else if p.digits < 6 || p.digits > 9 {
+        return ERR_BAD_DIGITS;
+    }
     if !has_counter && p.period < 1 { return ERR_BAD_PERIOD; }
     if has_counter && counter < 0 { return ERR_BAD_COUNTER; }
     // The secret must be base32. The text is checked before the URI
@@ -221,6 +227,9 @@ fn uri_build(out: u8[>..]&, secret_text: const u8[:], issuer: const u8[:], name:
         for c in "&period=" { out.push(c); }
         digits10(out, p.period);
     }
+    if p.steam {
+        for c in "&encoder=steam" { out.push(c); }
+    }
     return ERR_OK;
 }
 
@@ -233,6 +242,7 @@ fn key_from_uri(text: const u8[:], out: u8[>..]&, p: Params&) -> i64 {
     let code, r = uri_parse(text, parts);
     if code != ERR_OK { return code; }
     var opts = default_params();
+    if r.steam { opts = steam_params(); }
     if r.digits > 0 { opts.digits = r.digits; }
     if r.period > 0 { opts.period = r.period; }
     if r.algo_len > 0 {
@@ -248,6 +258,7 @@ fn key_from_uri(text: const u8[:], out: u8[>..]&, p: Params&) -> i64 {
     p.algo = opts.algo;
     p.digits = opts.digits;
     p.period = opts.period;
+    p.steam = opts.steam;
     return ERR_OK;
 }
 
@@ -266,7 +277,8 @@ fn uri_parse(text: const u8[:], out: u8[>..]&) -> i64, UriParams {
 fn uri_parse_into(text: const u8[:], out: u8[>..]&) -> i64, UriParams {
     var r = UriParams { totp: true, name_at: 0, name_len: 0, issuer_at: 0, issuer_len: 0,
                         issuer_q_at: 0, issuer_q_len: 0, secret_at: 0, secret_len: 0,
-                        algo_at: 0, algo_len: 0, digits: 0, period: 0, counter: -1 };
+                        algo_at: 0, algo_len: 0, digits: 0, period: 0, counter: -1,
+                        steam: false };
     let n = text.len;
     if n < 14 { return ERR_BAD_URI, r; }
     if text[..8] != "otpauth:" { return ERR_BAD_URI, r; }
@@ -353,12 +365,22 @@ fn uri_parse_into(text: const u8[:], out: u8[>..]&) -> i64, UriParams {
                         if seen & 8 != 0 { return ERR_BAD_URI, r; }
                         seen = seen | 8;
                         r.digits = number_of(val);
-                        if r.digits < 6 || r.digits > 9 { return ERR_BAD_URI, r; }
+                        // The rule of the count depends on the encoder. It
+                        // is checked once the whole query stands.
+                        if r.digits < 1 || r.digits > 9 { return ERR_BAD_URI, r; }
                     } else if key == "period" {
                         if seen & 16 != 0 { return ERR_BAD_URI, r; }
                         seen = seen | 16;
                         r.period = number_of(val);
                         if r.period < 1 { return ERR_BAD_URI, r; }
+                    } else if key == "encoder" {
+                        // The Go library pquerna/otp and the Python library
+                        // pyotp name the Steam encoder this way. The Rust
+                        // library totp-rs uses a host of steam instead.
+                        if seen & 64 != 0 { return ERR_BAD_URI, r; }
+                        seen = seen | 64;
+                        if val != "steam" { return ERR_BAD_URI, r; }
+                        r.steam = true;
                     } else if key == "counter" {
                         if seen & 32 != 0 { return ERR_BAD_URI, r; }
                         seen = seen | 32;
@@ -386,6 +408,22 @@ fn uri_parse_into(text: const u8[:], out: u8[>..]&) -> i64, UriParams {
         let lab = out[r.issuer_at..r.issuer_at + r.issuer_len];
         let qis = out[r.issuer_q_at..r.issuer_q_at + r.issuer_q_len];
         if lab != qis { return ERR_BAD_URI, r; }
+    }
+    // The rules of Steam: SHA-1, 5 characters, 30 seconds.
+    if r.steam {
+        if r.digits > 0 && r.digits != 5 { return ERR_BAD_URI, r; }
+        // The other rules hold.
+        if r.period > 0 && r.period != 30 { return ERR_BAD_URI, r; }
+        // Steam takes SHA-1 only and is a TOTP code.
+        if r.algo_len > 0 && algo_from_name(out[r.algo_at..r.algo_at + r.algo_len]) != ALGO_SHA1 {
+            return ERR_BAD_URI, r;
+        }
+        if !r.totp || counter_seen { return ERR_BAD_URI, r; }
+        r.digits = 5;
+        r.period = 30;
+    } else if r.digits > 0 && r.digits < 6 {
+        // The rules of the other codecs take 6 to 9 digits.
+        return ERR_BAD_URI, r;
     }
     // The type and the counter belong together.
     if r.totp && counter_seen { return ERR_BAD_URI, r; }
