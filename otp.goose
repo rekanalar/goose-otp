@@ -15,6 +15,7 @@ import hash from "github.com/kaitk/goose-hash@v0.0.4";
 import encoding from "rekanalar/goose-encoding@v1.0.0";
 import sha512;
 import hmac;
+import uri;
 
 // The codes of the faults.
 const ERR_OK: i64 = 0;

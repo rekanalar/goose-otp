@@ -177,6 +177,174 @@ fn test_verify() {
     assert(tf5 == otp::ERR_OK && t5 == 1);
 }
 
+fn test_uri_escape() {
+    var o: u8[>..] = [];
+    otp::uri_escape(o, "ACME");
+    assert(o == "ACME");
+    o.resize(0, 0);
+    otp::uri_escape(o, "We:rd & Co");
+    assert(o == "We%3Ard%20%26%20Co");
+    o.resize(0, 0);
+    otp::uri_escape(o, "a~b.c_d-e");
+    assert(o == "a~b.c_d-e");
+    o.resize(0, 0);
+    var ctrl: u8[1] = [1];
+    otp::uri_escape(o, ctrl[..]);
+    assert(o == "%01");
+}
+
+fn test_uri_algo_name() {
+    assert(otp::algo_from_name("SHA1") == otp::ALGO_SHA1);
+    assert(otp::algo_from_name("sha256") == otp::ALGO_SHA256);
+    assert(otp::algo_from_name("Sha512") == otp::ALGO_SHA512);
+    assert(otp::algo_from_name("MD5") == -1);
+    assert(otp::algo_from_name("SHA") == -1);
+    assert(otp::algo_from_name("SHA1234567") == -1);
+}
+
+fn test_uri_build() {
+    var o: u8[>..] = [];
+    // pyotp: build_uri("JBSWY3DPEHPK3PXP","alice@example.com",issuer="ACME")
+    let c1 = otp::uri_build(o, "JBSWY3DPEHPK3PXP", "ACME", "alice@example.com", 0, false, otp::default_params());
+    assert(c1 == otp::ERR_OK);
+    assert(o == "otpauth://totp/ACME:alice%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=ACME");
+    // Only non-default parameters stand.
+    o.resize(0, 0);
+    var p = otp::default_params();
+    p.algo = otp::ALGO_SHA256;
+    p.digits = 8;
+    p.period = 60;
+    assert(otp::uri_build(o, "JBSWY3DPEHPK3PXP", "ACME", "u", 0, false, p) == otp::ERR_OK);
+    assert(o == "otpauth://totp/ACME:u?secret=JBSWY3DPEHPK3PXP&issuer=ACME&algorithm=SHA256&digits=8&period=60");
+    // HOTP holds the counter and no period.
+    o.resize(0, 0);
+    assert(otp::uri_build(o, "JBSWY3DPEHPK3PXP", "", "u", 7, true, p) == otp::ERR_OK);
+    assert(o == "otpauth://hotp/u?secret=JBSWY3DPEHPK3PXP&counter=7&algorithm=SHA256&digits=8");
+    // A label with no issuer.
+    o.resize(0, 0);
+    assert(otp::uri_build(o, "JBSWY3DPEHPK3PXP", "", "u", 0, false, otp::default_params()) == otp::ERR_OK);
+    assert(o == "otpauth://totp/u?secret=JBSWY3DPEHPK3PXP");
+    // No label at all is a fault.
+    o.resize(0, 0);
+    assert(otp::uri_build(o, "JBSWY3DPEHPK3PXP", "", "", 0, false, otp::default_params()) == otp::ERR_NO_ISSUER);
+    assert(o.len == 0);
+    // A secret that is not base32 is a fault.
+    assert(otp::uri_build(o, "AB1!", "A", "u", 0, false, otp::default_params()) == otp::ERR_BAD_URI);
+    // An empty secret is a fault.
+    assert(otp::uri_build(o, "", "A", "u", 0, false, otp::default_params()) == otp::ERR_SHORT_SECRET);
+}
+
+fn test_uri_parse() {
+    var raw: u8[>..] = [];
+    // The text that pyotp builds reads back.
+    let c1, r1 = otp::uri_parse("otpauth://totp/ACME:alice%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=ACME", raw);
+    assert(c1 == otp::ERR_OK && r1.totp);
+    assert(raw[r1.name_at..r1.name_at + r1.name_len] == "alice@example.com");
+    assert(raw[r1.issuer_at..r1.issuer_at + r1.issuer_len] == "ACME");
+    assert(raw[r1.secret_at..r1.secret_at + r1.secret_len] == "JBSWY3DPEHPK3PXP");
+    // An encoded colon in the name stays one name.
+    var raw2: u8[>..] = [];
+    let c2, r2 = otp::uri_parse("otpauth://totp/We%3Ard%20%26%20Co:a%3Ab?secret=JBSWY3DPEHPK3PXP&issuer=We%3Ard%20%26%20Co", raw2);
+    assert(c2 == otp::ERR_OK);
+    assert(raw2[r2.name_at..r2.name_at + r2.name_len] == "a:b");
+    assert(raw2[r2.issuer_at..r2.issuer_at + r2.issuer_len] == "We:rd & Co");
+    // HOTP holds the counter.
+    var raw3: u8[>..] = [];
+    let c3, r3 = otp::uri_parse("otpauth://hotp/X:u?secret=JBSWY3DPEHPK3PXP&issuer=X&counter=7", raw3);
+    assert(c3 == otp::ERR_OK && !r3.totp && r3.counter == 7);
+    // The parameters land in the rules.
+    var raw4: u8[>..] = [];
+    let c4, r4 = otp::uri_parse("otpauth://totp/u?secret=JBSWY3DPEHPK3PXP&algorithm=sha256&digits=8&period=60", raw4);
+    assert(c4 == otp::ERR_OK && r4.digits == 8 && r4.period == 60);
+    assert(raw4[r4.algo_at..r4.algo_at + r4.algo_len] == "sha256");
+    // The faults of pyotp.
+    var keep: u8[>..] = [1];
+    let e1, _ = otp::uri_parse("https://totp/u?secret=X", keep);
+    assert(e1 == otp::ERR_BAD_URI && keep.len == 1);
+    let e2, _ = otp::uri_parse("otpauth://foo/u?secret=X", keep);
+    assert(e2 == otp::ERR_BAD_URI);
+    let e3, _ = otp::uri_parse("otpauth://totp/u", keep);
+    assert(e3 == otp::ERR_BAD_URI);
+    let e4, _ = otp::uri_parse("otpauth://totp/u?secret=MB&algorithm=MD5", keep);
+    assert(e4 == otp::ERR_BAD_URI);
+    let e5, _ = otp::uri_parse("otpauth://totp/u?secret=MB&digits=5", keep);
+    assert(e5 == otp::ERR_BAD_URI);
+    let e6, _ = otp::uri_parse("otpauth://totp/u?secret=MB&issuer=L&issuer=M", keep);
+    assert(e6 == otp::ERR_BAD_URI);
+    // An issuer that differs between label and query.
+    let e7, _ = otp::uri_parse("otpauth://totp/L:u?secret=MB&issuer=M", keep);
+    assert(e7 == otp::ERR_BAD_URI);
+    // An unknown key.
+    let e8, _ = otp::uri_parse("otpauth://totp/u?secret=MB&image=https://x/y.png", keep);
+    assert(e8 == otp::ERR_BAD_URI);
+    // A counter on totp, and no counter on hotp.
+    let e9, _ = otp::uri_parse("otpauth://totp/u?secret=MB&counter=1", keep);
+    assert(e9 == otp::ERR_BAD_URI);
+    let e10, _ = otp::uri_parse("otpauth://hotp/u?secret=MB", keep);
+    assert(e10 == otp::ERR_BAD_URI);
+    // A period of zero.
+    let e11, _ = otp::uri_parse("otpauth://totp/u?secret=MB&period=0", keep);
+    assert(e11 == otp::ERR_BAD_URI);
+    // A bad base32 secret.
+    let e12, _ = otp::uri_parse("otpauth://totp/u?secret=AB1!", keep);
+    assert(e12 == otp::ERR_BAD_URI);
+}
+
+fn test_uri_hostile() {
+    var o: u8[>..] = [];
+    let p = otp::default_params();
+    // A secret cannot carry a parameter or a space.
+    assert(otp::uri_build(o, "AAAA=&issuer=EVIL", "", "u", 0, false, p) == otp::ERR_BAD_URI);
+    assert(otp::uri_build(o, "A A A A", "", "u", 0, false, p) == otp::ERR_BAD_URI);
+    assert(otp::uri_build(o, "AB", "", "u", 0, false, p) == otp::ERR_BAD_URI);
+    assert(o.len == 0);
+    var keep: u8[>..] = [1];
+    let a1, _ = otp::uri_parse("otpauth://totp/u?secret=AAAA=!!", keep);
+    assert(a1 == otp::ERR_BAD_URI);
+    let a2, _ = otp::uri_parse("otpauth://totp/u?secret=AAAA=AAAA", keep);
+    assert(a2 == otp::ERR_BAD_URI);
+    let a3, _ = otp::uri_parse("otpauth://totp/u?secret=AB%20CD", keep);
+    assert(a3 == otp::ERR_BAD_URI);
+    let a4, _ = otp::uri_parse("otpauth://totp/u?secret=AB", keep);
+    assert(a4 == otp::ERR_BAD_URI);
+    // A late fault leaves the buffer as it was.
+    let a5, _ = otp::uri_parse("otpauth://totp/L:u?secret=MB&digits=5", keep);
+    assert(a5 == otp::ERR_BAD_URI && keep.len == 1 && keep[0] == 1);
+    // The largest numbers never crash the build.
+    var big = p;
+    big.period = 9223372036854775807;
+    assert(otp::uri_build(o, "JBSWY3DPEHPK3PXP", "ACME", "u", 0, false, big) == otp::ERR_OK);
+    var o2: u8[>..] = [];
+    assert(otp::uri_build(o2, "JBSWY3DPEHPK3PXP", "", "u", 9223372036854775807, true, p) == otp::ERR_OK);
+}
+
+fn test_uri_round_trip() {
+    // Build with the rules, read back, and build the code from the rules.
+    var p = otp::default_params();
+    p.algo = otp::ALGO_SHA512;
+    p.digits = 7;
+    p.period = 90;
+    var uri: u8[>..] = [];
+    let s = "12345678901234567890";
+    var text: u8[>..] = [];
+    otp::secret_encode(text, s);
+    assert(otp::uri_build(uri, text[..], "Bank", "u@x", 0, false, p) == otp::ERR_OK);
+    var raw: u8[>..] = [];
+    let c, r = otp::uri_parse(uri[..], raw);
+    assert(c == otp::ERR_OK);
+    var q = otp::default_params();
+    q.algo = otp::algo_from_name(raw[r.algo_at..r.algo_at + r.algo_len]);
+    q.digits = r.digits;
+    q.period = r.period;
+    assert(q.algo == p.algo && q.digits == p.digits && q.period == p.period);
+    // The secret text decodes to the secret.
+    var secret: u8[>..] = [];
+    var opts = encoding::text_options();
+    opts.padding = false;
+    assert(encoding::base32_decode(secret, raw[r.secret_at..r.secret_at + r.secret_len], opts) == encoding::ERR_OK);
+    assert(secret == s);
+}
+
 fn test_overflow() {
     let s = "12345678901234567890";
     let p = otp::default_params();
@@ -234,6 +402,12 @@ fn main() {
     test_sha512_lengths();
     test_faults();
     test_verify();
+    test_uri_escape();
+    test_uri_algo_name();
+    test_uri_build();
+    test_uri_parse();
+    test_uri_round_trip();
+    test_uri_hostile();
     test_overflow();
     test_secret_text();
     print("all otp tests pass\n");

@@ -36,4 +36,12 @@ fn main() {
     var shown: u8[>..] = [];
     otp::secret_encode(shown, fresh[..]);
     print("new key : ", shown.len, " characters\n");
+
+    // The key URI that an app takes as a QR code.
+    var uri: u8[>..] = [];
+    assert(otp::uri_build(uri, "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", "ACME", "alice@example.com", 0, false, p) == otp::ERR_OK);
+    print("uri     : ", uri[..], "\n");
+    var parts: u8[>..] = [];
+    let code, r = otp::uri_parse(uri[..], parts);
+    print("parsed  : ", otp::error_text(code), " digits ", r.digits, "\n");
 }
