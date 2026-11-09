@@ -7,7 +7,7 @@ One-time passwords for Goose. The package builds and checks the codes of HOTP (R
 ## Install
 
 ```goose
-import otp from "rekanalar/goose-otp@v0.6.0";
+import otp from "rekanalar/goose-otp@v1.0.0";
 ```
 
 The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the random source. It depends on `rekanalar/goose-encoding@v1.0.0` for base32. Declare both imports in the root file of your program.
@@ -130,10 +130,11 @@ Risks that stay: the package cannot stop a caller from trying many codes.
 - **The URI build checks the form of the secret.** It does not check the minimum length in bytes. `uri_parse` does the same.
 - **The Steam URI takes one form.** The package writes and reads the key `encoder=steam`. The Go library `pquerna/otp` and the Python library `pyotp` use that key. The Rust library `totp-rs` uses the host `steam` and the algorithm `STEAM`. The package refuses that form with `ERR_BAD_URI`.
 - **The rules hold a new field.** The field `steam` is new in `Params`. A program that builds `Params` with a literal must set it. `default_params` needs no change.
-- **No MD5.** `pquerna/otp` takes MD5. The package refuses it. MD5 is broken and no app needs it.
+- **No MD5.** `pyotp` and `pquerna/otp` take MD5. `totp-rs` and `otplib` do not. RFC 4226 and RFC 6238 name SHA-1, SHA-256 and SHA-512 only. No authenticator app reads MD5. The package refuses it with `ERR_BAD_ALGORITHM`.
 - **Digits from 6 to 9.** `pyotp` takes any count. Go `pquerna/otp` takes 6, 7 and 8. A 31 bit value holds 10 digits with a bias, so the package stops at 9.
-- **The key of a URI holds no image.** The Go library `pquerna/otp` draws the key URI as a QR image. The package holds no image.
-- **A counter is a signed 64 bit number.** RFC 4226 holds an unsigned 64 bit counter. A counter of 2 to the power of 63 or more is not possible.
+- **The package draws no QR image.** `pquerna/otp` and `totp-rs` (feature `qr`) draw the URI as a QR image. `pyotp` and `otplib` do not. Pass the text of `uri_build` to a QR package.
+- **Secrets are bytes or base32.** `otplib` also takes a secret as hex or ASCII text. Decode such a text to bytes first, for example with the hex codec of `goose-encoding`, and pass the bytes.
+- **A counter is a signed 64 bit number.** RFC 4226 holds an unsigned 64 bit counter. A counter of 2 to the power of 63 or more is not possible. `otplib` holds a number of 2 to the power of 53 only. A TOTP step of that size lies beyond any real time, and a HOTP counter grows by one per use.
 - **The random source ends the program.** `random_secret` reads the random source of the operating system. If that source fails, the program ends. It never returns weak bytes.
 - **SHA-512 is not in `goose-hash`.** The package holds its own pure Goose code. It runs on the Goose rounds only, with no CPU instructions. It is slower than a library on the CPU instructions. A code needs three or four hash calls, so the cost is small.
 - **The package builds a C file of `goose-hash`.** `goose run` builds it once on first use.
