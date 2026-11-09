@@ -165,6 +165,18 @@ fn digits_text(value: i64, p: Params) -> u8[9] {
     return t;
 }
 
+// totp_offset adds the text of the code for a time with the counter
+// moved by offset steps. The offset may be negative. The Python library
+// pyotp takes an offset on its at() call.
+fn totp_offset(out: u8[>..]&, secret: const u8[:], now: i64, offset: i64, p: Params) -> i64 {
+    let c, fault = totp_counter(now, p);
+    if fault != ERR_OK { return fault; }
+    // The counter must not wrap.
+    if offset > 0 && c > 9223372036854775807 - offset { return ERR_BAD_COUNTER; }
+    if offset < 0 && c < -offset { return ERR_BAD_COUNTER; }
+    return hotp(out, secret, c + offset, p);
+}
+
 // hotp adds the text of the code for the counter to the buffer. A fault
 // leaves the buffer as it was.
 fn hotp(out: u8[>..]&, secret: const u8[:], counter: i64, p: Params) -> i64 {
@@ -308,6 +320,21 @@ fn secret_encode(out: u8[>..]&, secret: const u8[:]) {
     var opts = encoding::strict_options();
     opts.padding = false;
     encoding::base32_encode(out, secret, opts);
+}
+
+// random_secret_text adds the base32 text of n random bytes to the
+// buffer. The text has no padding. The Python library pyotp gives the
+// same form with random_base32.
+fn random_secret_text(out: u8[>..]&, n: i64) -> i64 {
+    let fault = random_secret(out, n);
+    if fault != ERR_OK { return fault; }
+    // The text stands after the bytes. The bytes go first.
+    let bytes = out.len - n;
+    var text: u8[>..] = [];
+    secret_encode(text, out[bytes..]);
+    out.resize(bytes, 0);
+    for c in text { out.push(c); }
+    return ERR_OK;
 }
 
 // random_secret adds n bytes from the random source of the operating

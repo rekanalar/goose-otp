@@ -21,6 +21,7 @@ namespace otp;
 
 import std;
 import encoding from "rekanalar/goose-encoding@v1.0.0";
+import encoding from "rekanalar/goose-encoding@v1.0.0";
 
 // The codes of the faults of the URI.
 const ERR_BAD_URI: i64 = 11;
@@ -223,6 +224,33 @@ fn uri_build(out: u8[>..]&, secret_text: const u8[:], issuer: const u8[:], name:
     return ERR_OK;
 }
 
+// key_from_uri reads an otpauth URI into the rules and the secret. It
+// fills p with the rules of the URI and writes the bytes of the secret
+// to out. It is the same as the key of the Go library pquerna/otp, which
+// holds the parts of a URI. A fault leaves the buffer as it was.
+fn key_from_uri(text: const u8[:], out: u8[>..]&, p: Params&) -> i64 {
+    var parts: u8[>..] = [];
+    let code, r = uri_parse(text, parts);
+    if code != ERR_OK { return code; }
+    var opts = default_params();
+    if r.digits > 0 { opts.digits = r.digits; }
+    if r.period > 0 { opts.period = r.period; }
+    if r.algo_len > 0 {
+        let a = algo_from_name(parts[r.algo_at..r.algo_at + r.algo_len]);
+        if a < 0 { return ERR_BAD_ALGORITHM; }
+        opts.algo = a;
+    }
+    let secret_text = parts[r.secret_at..r.secret_at + r.secret_len];
+    let base = out.len;
+    var opts2 = no_pad_options();
+    let sc = encoding::base32_decode(out, secret_text, opts2);
+    if sc != encoding::ERR_OK { out.resize(base, 0); return ERR_BAD_SECRET_TEXT; }
+    p.algo = opts.algo;
+    p.digits = opts.digits;
+    p.period = opts.period;
+    return ERR_OK;
+}
+
 // uri_parse reads an otpauth URI. A fault leaves the buffer as it was.
 fn uri_parse(text: const u8[:], out: u8[>..]&) -> i64, UriParams {
     let base = out.len;
@@ -363,6 +391,13 @@ fn uri_parse_into(text: const u8[:], out: u8[>..]&) -> i64, UriParams {
     if r.totp && counter_seen { return ERR_BAD_URI, r; }
     if !r.totp && !counter_seen { return ERR_BAD_URI, r; }
     return ERR_OK, r;
+}
+
+// no_pad_options gives the options that read the text an app shows.
+fn no_pad_options() -> encoding::Options {
+    var opts = encoding::text_options();
+    opts.padding = false;
+    return opts;
 }
 
 // secret_ok tells whether the text is a base32 secret. The base32

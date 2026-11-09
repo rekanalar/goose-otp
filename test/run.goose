@@ -425,6 +425,53 @@ fn test_clock() {
     assert(f2 == otp::ERR_BAD_CODE);
 }
 
+fn test_offset_and_key() {
+    let s = "12345678901234567890";
+    let p = otp::default_params();
+    // The offset moves the step, as pyotp at(for_time, counter_offset).
+    var base: u8[>..] = [];
+    assert(otp::totp(base, s, 59, p) == otp::ERR_OK);
+    var off: u8[>..] = [];
+    assert(otp::totp_offset(off, s, 59, 1, p) == otp::ERR_OK);
+    var next: u8[>..] = [];
+    assert(otp::totp(next, s, 89, p) == otp::ERR_OK);
+    assert(off == next);
+    var back: u8[>..] = [];
+    assert(otp::totp_offset(back, s, 59, -1, p) == otp::ERR_OK);
+    var prev: u8[>..] = [];
+    assert(otp::totp(prev, s, 29, p) == otp::ERR_OK);
+    assert(back == prev);
+    // An offset below zero fails when the step would fall below zero.
+    var out: u8[>..] = [7];
+    assert(otp::totp_offset(out, s, 0, -1, p) == otp::ERR_BAD_COUNTER);
+    assert(out.len == 1 && out[0] == 7);
+    // The random secret text is base32 without padding.
+    var text: u8[>..] = [];
+    assert(otp::random_secret_text(text, 20) == otp::ERR_OK);
+    assert(text.len == 32);
+    var bytes: u8[>..] = [];
+    assert(otp::secret_decode(bytes, text[..]) == otp::ERR_OK);
+    assert(bytes.len == 20);
+    // The key of a URI gives the rules and the secret.
+    var secret: u8[>..] = [];
+    var q = otp::default_params();
+    let k = otp::key_from_uri("otpauth://totp/u?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&algorithm=SHA256&digits=8&period=60", secret, q);
+    assert(k == otp::ERR_OK);
+    assert(secret == s);
+    assert(q.algo == otp::ALGO_SHA256 && q.digits == 8 && q.period == 60);
+    // The code of the key is the code of the secret with the rules.
+    var c1: u8[>..] = [];
+    var c2: u8[>..] = [];
+    assert(otp::totp(c1, secret[..], 59, q) == otp::ERR_OK);
+    assert(otp::totp(c2, s, 59, q) == otp::ERR_OK);
+    assert(c1 == c2);
+    // A bad URI gives a fault and leaves the buffer as it was.
+    var keep: u8[>..] = [1];
+    var q2 = otp::default_params();
+    let k2 = otp::key_from_uri("otpauth://totp/u?secret=MB&digits=5", keep, q2);
+    assert(k2 == otp::ERR_BAD_URI && keep.len == 1);
+}
+
 fn test_overflow() {
     let s = "12345678901234567890";
     let p = otp::default_params();
@@ -491,6 +538,7 @@ fn main() {
     test_overflow();
     test_steam();
     test_clock();
+    test_offset_and_key();
     test_step_time();
     test_secret_text();
     print("all otp tests pass\n");
