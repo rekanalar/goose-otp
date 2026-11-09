@@ -7,7 +7,8 @@
 // for every rule that differs from the default of RFC 6238. The read
 // is strict: it refuses a scheme or a type that is not otpauth or
 // totp/hotp, a secret that is not base32, an algorithm that is not one
-// of the three, a count of digits outside 6 to 9, a period of less
+// of the three, an image that is not an https URL, a count of digits
+// outside 6 to 9, a period of less
 // than one, an issuer that differs between the label and the query,
 // and a key that it does not know.
 //
@@ -61,6 +62,28 @@ struct UriParams {
     counter: i64,
     // True when the query names the Steam encoder.
     steam: bool,
+    // The place and the length of the image URL, or a length of 0.
+    image_at: i64,
+    image_len: i64,
+}
+
+// image_ok tells whether a text is an https URL with a host and a path.
+// pyotp takes the same form. Any other scheme, such as javascript:, is
+// refused, and so is a byte that is a control byte or a space.
+fn image_ok(s: const u8[:]) -> bool {
+    if s.len < 10 || s.len > 2048 { return false; }
+    if s[..8] != "https://" { return false; }
+    var slash: i64 = -1;
+    var i: i64 = 8;
+    while i < s.len {
+        // A control byte, a space, a backslash and a user name are refused.
+        // Apps read the host of such a URL in different ways.
+        if s[i] <= 32 || s[i] == 127 || s[i] == '\\' || s[i] == '@' { return false; }
+        if s[i] == '/' && slash < 0 { slash = i; }
+        i = i + 1;
+    }
+    // A host of at least one byte, then a path of at least the slash.
+    return slash > 8 && slash < s.len;
 }
 
 // hex_digit gives the value of a hex digit, or -1.
@@ -233,6 +256,20 @@ fn uri_build(out: u8[>..]&, secret_text: const u8[:], issuer: const u8[:], name:
     return ERR_OK;
 }
 
+// uri_build_image adds the otpauth URI with the key image, as pyotp
+// does with its image argument. The image must be an https URL. A fault
+// leaves the buffer as it was.
+fn uri_build_image(out: u8[>..]&, secret_text: const u8[:], issuer: const u8[:], name: const u8[:],
+                   counter: i64, has_counter: bool, p: Params, image: const u8[:]) -> i64 {
+    if !image_ok(image) { return ERR_BAD_URI; }
+    let base = out.len;
+    let code = uri_build(out, secret_text, issuer, name, counter, has_counter, p);
+    if code != ERR_OK { return code; }
+    for c in "&image=" { out.push(c); }
+    uri_escape(out, image);
+    return ERR_OK;
+}
+
 // key_from_uri reads an otpauth URI into the rules and the secret. It
 // fills p with the rules of the URI and writes the bytes of the secret
 // to out. It is the same as the key of the Go library pquerna/otp, which
@@ -278,7 +315,7 @@ fn uri_parse_into(text: const u8[:], out: u8[>..]&) -> i64, UriParams {
     var r = UriParams { totp: true, name_at: 0, name_len: 0, issuer_at: 0, issuer_len: 0,
                         issuer_q_at: 0, issuer_q_len: 0, secret_at: 0, secret_len: 0,
                         algo_at: 0, algo_len: 0, digits: 0, period: 0, counter: -1,
-                        steam: false };
+                        steam: false, image_at: 0, image_len: 0 };
     let n = text.len;
     if n < 14 { return ERR_BAD_URI, r; }
     if text[..8] != "otpauth:" { return ERR_BAD_URI, r; }
@@ -381,6 +418,13 @@ fn uri_parse_into(text: const u8[:], out: u8[>..]&) -> i64, UriParams {
                         seen = seen | 64;
                         if val != "steam" { return ERR_BAD_URI, r; }
                         r.steam = true;
+                    } else if key == "image" {
+                        if seen & 128 != 0 { return ERR_BAD_URI, r; }
+                        seen = seen | 128;
+                        r.image_at = out.len;
+                        uri_unescape(out, val[..]);
+                        r.image_len = out.len - r.image_at;
+                        if !image_ok(out[r.image_at..r.image_at + r.image_len]) { return ERR_BAD_URI, r; }
                     } else if key == "counter" {
                         if seen & 32 != 0 { return ERR_BAD_URI, r; }
                         seen = seen | 32;

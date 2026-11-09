@@ -7,7 +7,7 @@ One-time passwords for Goose. The package builds and checks the codes of HOTP (R
 ## Install
 
 ```goose
-import otp from "rekanalar/goose-otp@v1.0.0";
+import otp from "rekanalar/goose-otp@v1.1.0";
 ```
 
 The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the random source. It depends on `rekanalar/goose-encoding@v1.0.0` for base32. Declare both imports in the root file of your program.
@@ -33,6 +33,8 @@ The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the rand
 - **The wall clock.** `totp_now` and `totp_verify_now` read the clock. Every other call takes the time as an argument, so a test can fix it.
 - **The time left.** `totp_ttl` gives the seconds that a code stays valid. `totp_next_step` gives the start of the next step.
 - **The `otpauth://` URI.** Build and parse the key URI of Google Authenticator, for TOTP and HOTP.
+- **QR codes.** `qr_encode` gives the modules of a QR code. `qr_png` gives a PNG image of it, as `pquerna/otp` `Key.Image` and `totp-rs` `get_qr_png` do. The encoder is pure Goose.
+- **The full HOTP counter.** `hotp_u64` and `hotp_verify_u64` take the whole range of RFC 4226. That range is 0 to 2 to the power of 64 minus 1.
 
 ## API
 
@@ -47,6 +49,10 @@ The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the rand
 | `totp_offset(out, secret, now, offset, p)` | The code for a time with the step moved by `offset`. The offset may be negative |
 | `key_from_uri(text, out, p)` | Reads a key URI into the rules and the secret. It is the key of the Go library `pquerna/otp` |
 | `random_secret_text(out, n)` | The base32 text of `n` random bytes, with no padding |
+| `random_secret_hex(out, n)` | The upper case hex text of `n` random bytes. `pyotp` gives it with `random_hex` |
+| `hotp_u64(out, secret, counter, p)`, `hotp_verify_u64(secret, code, counter, ahead, p)` | The same as `hotp` and `hotp_verify` for a `u64` counter |
+| `qr_encode(out, text)` | Adds the modules of the QR code of the text to `out`, one byte per module, 1 is dark. Gives a code and the modules of one side |
+| `qr_png(out, text, scale)` | Adds a PNG of the QR code to `out`. Each module is `scale` pixels, and a quiet zone of 4 modules surrounds it |
 | `hotp_value`, `totp_counter` | The number of a code, and the step of a time |
 | `hotp_verify(secret, code, counter, ahead, p)` | Gives the counter that matched, and a code |
 | `totp_verify(secret, code, now, back, ahead, p)` | Gives the step that matched, and a code |
@@ -54,6 +60,7 @@ The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the rand
 | `secret_encode(out, secret)` | Adds the base32 text of a secret to `out` |
 | `random_secret(out, n)` | Adds `n` random bytes to `out` |
 | `uri_build(out, secret_text, issuer, name, counter, has_counter, p)` | Adds the `otpauth://` URI to `out`. A parameter stands only when it differs from SHA-1, 6 digits, 30 seconds |
+| `uri_build_image(out, secret_text, issuer, name, counter, has_counter, p, image)` | The same as `uri_build`, with the key `image`. The image must be an https URL, as in `pyotp` |
 | `uri_parse(text, out)` | Reads a URI. The texts go to `out`. The result holds the place and the length of each text, and the rules |
 | `error_text(code)` | Names a code |
 | `uri_error_text(code)` | Names `ERR_BAD_URI` and `ERR_NO_ISSUER` |
@@ -85,7 +92,9 @@ The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the rand
 | `ERR_BAD_WINDOW` | A window is negative or larger than `MAX_WINDOW` (1000) |
 | `ERR_BAD_URI` | The URI is not valid |
 | `ERR_NO_ISSUER` | The label of a URI has neither an issuer nor a name |
-| `ERR_BAD_LENGTH` | `random_secret` got a length that is not from 1 to `MAX_SECRET` (1024) |
+| `ERR_BAD_LENGTH` | `random_secret` got a length that is not from 1 to `MAX_SECRET` (1024). `qr_encode` got an empty text |
+| `ERR_QR_TOO_LONG` | The text is longer than 2331 bytes, the most that a QR code of level M holds |
+| `ERR_BAD_SCALE` | The scale of `qr_png` is below 1, or the image is wider than 4096 pixels |
 
 A call that fails leaves the buffer of the caller as it was.
 
@@ -95,7 +104,7 @@ A call that fails leaves the buffer of the caller as it was.
 import std;
 import hash from "github.com/kaitk/goose-hash@v0.0.4";
 import encoding from "rekanalar/goose-encoding@v1.0.0";
-import otp from "rekanalar/goose-otp@v0.6.0";
+import otp from "rekanalar/goose-otp@v1.1.0";
 
 fn main() {
     var secret: u8[>..] = [];
@@ -116,25 +125,27 @@ fn main() {
 - **The URI read is strict.** It refuses a key that it does not know. It refuses a key that stands twice. It refuses an algorithm that is not SHA1, SHA256 or SHA512, and digits outside 6 to 9. It refuses a period below 1, a counter on a TOTP URI and a HOTP URI with no counter. It refuses an issuer that differs between the label and the query. The Python library `pyotp` lets the last repeated key win.
 - **The label splits before it decodes.** An encoded colon inside a name stays inside the name. `pyotp` does the same. A name cannot forge an issuer.
 - **The secret in a URI is checked by the real reader.** Both the build and the parse run it. A secret cannot carry `&`, a space or a byte after the padding. A text with leftover bits is refused.
+- **The image URL is checked.** The URI read takes the key `image` only as an https URL. The build and the parse refuse any scheme but https, such as `javascript:`. They refuse a space, a control byte and a URL of over 2048 bytes. `pyotp` checks the scheme and the host only.
 - **The URI write escapes every byte.** Only letters, digits and `-._~` stay. A name with `&` or `?` cannot add a parameter.
+- **The QR size is bounded.** A text of more than 2331 bytes is a fault. An image wider than 4096 pixels is a fault, so a hostile scale cannot exhaust the memory.
 - **The secret text is strict.** The base32 reader refuses a byte that is not in the alphabet and leftover bits. It does not skip a bad byte.
 
-Risks that stay: the package cannot stop a caller from trying many codes.
+Risks that stay: the package cannot stop a caller from trying many codes. A QR image holds the secret in plain form. Show it once over a secure channel, and never log it or cache it.
 
 **Rate-limit the verify call** in your program. A 6 digit code has one million values. Store the step or counter that matched. Refuse a step that is not larger. The package keeps no state and stores no secret. Your program stores the secrets safely.
 
 ## Limits
 
-- **The URI holds no `image`.** `pyotp` writes the key `image`. The package refuses it.
 - **Digits go to 9 in a URI.** `pyotp` takes 6, 7 and 8 only. The Key Uri Format wiki names 6 to 8. The package takes 6 to 9, as for a code.
 - **The URI build checks the form of the secret.** It does not check the minimum length in bytes. `uri_parse` does the same.
 - **The Steam URI takes one form.** The package writes and reads the key `encoder=steam`. The Go library `pquerna/otp` and the Python library `pyotp` use that key. The Rust library `totp-rs` uses the host `steam` and the algorithm `STEAM`. The package refuses that form with `ERR_BAD_URI`.
 - **The rules hold a new field.** The field `steam` is new in `Params`. A program that builds `Params` with a literal must set it. `default_params` needs no change.
 - **No MD5.** `pyotp` and `pquerna/otp` take MD5. `totp-rs` and `otplib` do not. RFC 4226 and RFC 6238 name SHA-1, SHA-256 and SHA-512 only. No authenticator app reads MD5. The package refuses it with `ERR_BAD_ALGORITHM`.
 - **Digits from 6 to 9.** `pyotp` takes any count. Go `pquerna/otp` takes 6, 7 and 8. A 31 bit value holds 10 digits with a bias, so the package stops at 9.
-- **The package draws no QR image.** `pquerna/otp` and `totp-rs` (feature `qr`) draw the URI as a QR image. `pyotp` and `otplib` do not. Pass the text of `uri_build` to a QR package.
+- **The QR code has one level and one mode.** The encoder writes byte mode at level M, as `pquerna/otp` does. It takes the smallest version from 1 to 40. It picks the mask by the penalty of ISO/IEC 18004. The mask of a symbol can differ from the mask of another encoder. Every mask scans.
+- **The PNG is not compressed.** `qr_png` writes stored data, so the file is larger than a compressed one. Pass the bytes to an image package to re-encode them. `totp-rs` `get_qr_base64` is the base64 of these bytes: use the `base64` module of the standard library.
 - **Secrets are bytes or base32.** `otplib` also takes a secret as hex or ASCII text. Decode such a text to bytes first, for example with the hex codec of `goose-encoding`, and pass the bytes.
-- **A counter is a signed 64 bit number.** RFC 4226 holds an unsigned 64 bit counter. A counter of 2 to the power of 63 or more is not possible. `otplib` holds a number of 2 to the power of 53 only. A TOTP step of that size lies beyond any real time, and a HOTP counter grows by one per use.
+- **The `i64` counter calls stop at 2^63 - 1.** For a larger counter, use `hotp_u64` and `hotp_verify_u64`. The steps of `totp` stay below the limit.
 - **The random source ends the program.** `random_secret` reads the random source of the operating system. If that source fails, the program ends. It never returns weak bytes.
 - **SHA-512 is not in `goose-hash`.** The package holds its own pure Goose code. It runs on the Goose rounds only, with no CPU instructions. It is slower than a library on the CPU instructions. A code needs three or four hash calls, so the cost is small.
 - **The package builds a C file of `goose-hash`.** `goose run` builds it once on first use.

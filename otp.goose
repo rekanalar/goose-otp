@@ -17,6 +17,7 @@ import encoding from "rekanalar/goose-encoding@v1.0.0";
 import sha512;
 import hmac;
 import uri;
+import qr;
 
 // The codes of the faults.
 const ERR_OK: i64 = 0;
@@ -44,6 +45,8 @@ fn error_text(code: i64) -> const u8[:] {
     if code == ERR_BAD_SECRET_TEXT { return "the secret text is not valid base32"; }
     if code == ERR_BAD_WINDOW { return "the window is negative or larger than the limit"; }
     if code == ERR_BAD_LENGTH { return "the length is not from 1 to the limit"; }
+    if code == ERR_QR_TOO_LONG { return "the text does not fit in a QR code"; }
+    if code == ERR_BAD_SCALE { return "the scale is below 1 or the image is too wide"; }
     return "unknown code";
 }
 
@@ -125,9 +128,19 @@ fn pow10(n: i64) -> i64 {
 
 // hotp_value gives the number of the code for the counter, and a code.
 fn hotp_value(secret: const u8[:], counter: i64, p: Params) -> i64, i64 {
+    if counter < 0 {
+        let fault = check_params(secret, p);
+        if fault != ERR_OK { return 0, fault; }
+        return 0, ERR_BAD_COUNTER;
+    }
+    return hotp_value_u64(secret, counter as u64, p);
+}
+
+// hotp_value_u64 does the work of hotp_value for the full 64 bit counter
+// of RFC 4226.
+fn hotp_value_u64(secret: const u8[:], counter: u64, p: Params) -> i64, i64 {
     let fault = check_params(secret, p);
     if fault != ERR_OK { return 0, fault; }
-    if counter < 0 { return 0, ERR_BAD_COUNTER; }
     var msg: u8[8] = [0; 8];
     for j in 8 { msg[7 - j] = (counter >> (8 * j)) as! u8; }
     let mac = hmac(p.algo, secret, msg[..]);
@@ -187,6 +200,27 @@ fn hotp(out: u8[>..]&, secret: const u8[:], counter: i64, p: Params) -> i64 {
     return ERR_OK;
 }
 
+// hotp_u64 adds the text of the code for a counter of the full range of
+// RFC 4226, 0 to 2 to the power of 64 minus 1. Go pquerna/otp and Rust
+// totp-rs take this range. A fault leaves the buffer as it was.
+fn hotp_u64(out: u8[>..]&, secret: const u8[:], counter: u64, p: Params) -> i64 {
+    let v, fault = hotp_value_u64(secret, counter, p);
+    if fault != ERR_OK { return fault; }
+    let t = digits_text(v, p);
+    for j in p.digits { out.push(t[j]); }
+    return ERR_OK;
+}
+
+// hotp_verify_u64 tests the code against the counter and the next
+// `ahead` counters of the full 64 bit range. It gives the counter that
+// matched. The window stops at the largest counter and does not wrap.
+fn hotp_verify_u64(secret: const u8[:], code: const u8[:], counter: u64, ahead: i64, p: Params) -> u64, i64 {
+    if ahead < 0 || ahead > MAX_WINDOW { return 0, ERR_BAD_WINDOW; }
+    var last: u64 = 18446744073709551615;
+    if counter <= last - (ahead as u64) { last = counter + (ahead as u64); }
+    return verify_range(secret, code, counter, last, p);
+}
+
 // totp_counter gives the step of the time.
 fn totp_counter(now: i64, p: Params) -> i64, i64 {
     if p.period < 1 { return 0, ERR_BAD_PERIOD; }
@@ -227,7 +261,7 @@ fn totp(out: u8[>..]&, secret: const u8[:], now: i64, p: Params) -> i64 {
 // verify_range tests the code against the counters from first to last.
 // It runs every counter, so the time does not tell where a match stands.
 // It gives the first counter that matched.
-fn verify_range(secret: const u8[:], code: const u8[:], first: i64, last: i64, p: Params) -> i64, i64 {
+fn verify_range(secret: const u8[:], code: const u8[:], first: u64, last: u64, p: Params) -> u64, i64 {
     let fault = check_params(secret, p);
     if fault != ERR_OK { return 0, fault; }
     if code.len != p.digits { return 0, ERR_BAD_CODE; }
@@ -238,22 +272,22 @@ fn verify_range(secret: const u8[:], code: const u8[:], first: i64, last: i64, p
             return 0, ERR_BAD_CODE;
         }
     }
-    var found: i64 = -1;
+    var found: u64 = 0;
+    var has = false;
     var c = first;
-    if c < 0 { c = 0; }
     while c <= last {
-        let v, f = hotp_value(secret, c, p);
+        let v, f = hotp_value_u64(secret, c, p);
         if f != ERR_OK { return 0, f; }
         let t = digits_text(v, p);
         var diff: u8 = 0;
         for j in p.digits { diff |= t[j] ^ code[j]; }
-        if diff == 0 && found < 0 { found = c; }
+        if diff == 0 && !has { found = c; has = true; }
         // The last counter ends the loop. A counter of I64_MAX must not
         // wrap to the smallest number.
         if c == last { break; }
         c = c + 1;
     }
-    if found < 0 { return 0, ERR_NO_MATCH; }
+    if !has { return 0, ERR_NO_MATCH; }
     return found, ERR_OK;
 }
 
@@ -266,7 +300,8 @@ fn hotp_verify(secret: const u8[:], code: const u8[:], counter: i64, ahead: i64,
     // The last counter must not wrap.
     var last = 9223372036854775807;
     if counter <= 9223372036854775807 - ahead { last = counter + ahead; }
-    return verify_range(secret, code, counter, last, p);
+    let m, f = verify_range(secret, code, counter as u64, last as u64, p);
+    return m as i64, f;
 }
 
 // totp_verify tests the code against the step of the time, `back` steps
@@ -284,7 +319,8 @@ fn totp_verify(secret: const u8[:], code: const u8[:], now: i64, back: i64, ahea
     if c <= 9223372036854775807 - ahead { last = c + ahead; }
     var first = c - back;
     if first < 0 { first = 0; }
-    return verify_range(secret, code, first, last, p);
+    let m, f = verify_range(secret, code, first as u64, last as u64, p);
+    return m as i64, f;
 }
 
 // now_seconds gives the wall clock in seconds since 1970. It is the
@@ -334,6 +370,19 @@ fn random_secret_text(out: u8[>..]&, n: i64) -> i64 {
     secret_encode(text, out[bytes..]);
     out.resize(bytes, 0);
     for c in text { out.push(c); }
+    return ERR_OK;
+}
+
+// random_secret_hex adds the upper case hex text of n random bytes to
+// the buffer. The Python library pyotp gives a text of hex digits with
+// random_hex.
+fn random_secret_hex(out: u8[>..]&, n: i64) -> i64 {
+    var raw: u8[>..] = [];
+    let fault = random_secret(raw, n);
+    if fault != ERR_OK { return fault; }
+    var opts = encoding::strict_options();
+    opts.lower = false;
+    encoding::hex_encode(out, raw[..], opts);
     return ERR_OK;
 }
 

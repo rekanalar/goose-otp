@@ -263,6 +263,12 @@ fn test_uri_parse() {
     assert(e1 == otp::ERR_BAD_URI && keep.len == 1);
     let e2, _ = otp::uri_parse("otpauth://foo/u?secret=X", keep);
     assert(e2 == otp::ERR_BAD_URI);
+    assert(otp::uri_build_image(keep, "JBSWY3DPEHPK3PXP", "E", "u", 0, false, otp::default_params(),
+                                "https://user:pw@h/x") == otp::ERR_BAD_URI && keep.len == 1);
+    assert(otp::uri_build_image(keep, "JBSWY3DPEHPK3PXP", "E", "u", 0, false, otp::default_params(),
+                                "https://a\\@evil.com/x") == otp::ERR_BAD_URI && keep.len == 1);
+    assert(otp::qr_png(keep, "hello", 9223372036854775807) == otp::ERR_BAD_SCALE && keep.len == 1);
+    assert(otp::qr_png(keep, "hello", 8269230102007730176) == otp::ERR_BAD_SCALE && keep.len == 1);
     let e3, _ = otp::uri_parse("otpauth://totp/u", keep);
     assert(e3 == otp::ERR_BAD_URI);
     let e4, _ = otp::uri_parse("otpauth://totp/u?secret=MB&algorithm=MD5", keep);
@@ -564,8 +570,144 @@ fn test_secret_text() {
     assert(r.len == 20);
 }
 
+fn test_u64_counter() {
+    let key = "12345678901234567890";
+    var out: u8[>..] = [];
+    // Values from Python hmac over the 8 byte big endian counter.
+    assert(otp::hotp_u64(out, key, 18446744073709551615, otp::default_params()) == otp::ERR_OK);
+    assert(out == "094451");
+    out.resize(0, 0);
+    assert(otp::hotp_u64(out, key, 9223372036854775808, otp::default_params()) == otp::ERR_OK);
+    assert(out == "959616");
+    // A window at the top stops and does not wrap.
+    let m, f = otp::hotp_verify_u64(key, "488204", 18446744073709551614, 5, otp::default_params());
+    assert(f == otp::ERR_OK && m == 18446744073709551614);
+    let m2, f2 = otp::hotp_verify_u64(key, "094451", 18446744073709551614, 1000, otp::default_params());
+    assert(f2 == otp::ERR_OK && m2 == 18446744073709551615);
+    let m3, f3 = otp::hotp_verify_u64(key, "000000", 18446744073709551615, 1, otp::default_params());
+    assert(f3 == otp::ERR_NO_MATCH || f3 == otp::ERR_OK);
+    let m4, f4 = otp::hotp_verify_u64(key, "094451", 0, 1001, otp::default_params());
+    assert(f4 == otp::ERR_BAD_WINDOW);
+    // The signed call still refuses a negative counter.
+    out.resize(0, 0);
+    assert(otp::hotp(out, key, -1, otp::default_params()) == otp::ERR_BAD_COUNTER && out.len == 0);
+}
+
+fn test_random_hex() {
+    var out: u8[>..] = [];
+    assert(otp::random_secret_hex(out, 20) == otp::ERR_OK && out.len == 40);
+    for c in out { assert(c - '0' < 10 || c - 'A' < 6); }
+    var bad: u8[>..] = [];
+    assert(otp::random_secret_hex(bad, 0) == otp::ERR_BAD_LENGTH && bad.len == 0);
+}
+
+fn test_qr() {
+    // The code of the text "a" is version 1, 21 modules a side. The
+    // rows equal the output of the reference encoder of Nayuki at level M.
+    let want: const u8[:][21] = [
+        "111111100101101111111",
+        "100000101011001000001",
+        "101110101101001011101",
+        "101110101011001011101",
+        "101110100100101011101",
+        "100000100011001000001",
+        "111111101010101111111",
+        "000000001100000000000",
+        "100000101011011001110",
+        "100110000001110111001",
+        "001011100110101100000",
+        "010101011001111101010",
+        "110100111101111111111",
+        "000000001100100000101",
+        "111111100111010011110",
+        "100000100010001000111",
+        "101110100111010011100",
+        "101110100101111101000",
+        "101110100101110111011",
+        "100000100011111101000",
+        "111111101010100100110"
+    ];
+    var m: u8[>..] = [];
+    let code, size = otp::qr_encode(m, "a");
+    assert(code == otp::ERR_OK && size == 21 && m.len == 441);
+    for y in 21 {
+        for x in 21 {
+            var ch: u8 = '0';
+            if m[y * 21 + x] == 1 { ch = '1'; }
+            assert(want[y][x] == ch);
+        }
+    }
+    // A longer text takes a larger version: 79 bytes need version 5.
+    var m2: u8[>..] = [];
+    let c2, s2 = otp::qr_encode(m2, "otpauth://totp/Example:alice@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Example");
+    assert(c2 == otp::ERR_OK && s2 == 37 && m2.len == 37 * 37);
+    // The largest text fits at version 40. One byte more does not.
+    var big: u8[>..] = [];
+    for k in 2331 { big.push('a' + (k % 26) as! u8); }
+    var m3: u8[>..] = [];
+    let c3, s3 = otp::qr_encode(m3, big[..]);
+    assert(c3 == otp::ERR_OK && s3 == 177);
+    big.push('z');
+    var m4: u8[>..] = [];
+    let c4, s4 = otp::qr_encode(m4, big[..]);
+    assert(c4 == otp::ERR_QR_TOO_LONG && m4.len == 0);
+    // An empty text is a fault.
+    let c5, s5 = otp::qr_encode(m4, "");
+    assert(c5 == otp::ERR_BAD_LENGTH && m4.len == 0);
+}
+
+fn test_qr_png() {
+    var png: u8[>..] = [];
+    assert(otp::qr_png(png, "a", 3) == otp::ERR_OK);
+    // The signature, then IHDR with the width of (21 + 8) * 3 = 87.
+    let sig: u8[8] = [137, 80, 78, 71, 13, 10, 26, 10];
+    for k in 8 { assert(png[k] == sig[k]); }
+    assert(png[8] == 0 && png[11] == 13);
+    assert(png[12] == 'I' && png[13] == 'H' && png[14] == 'D' && png[15] == 'R');
+    assert(png[19] == 87 && png[23] == 87);
+    // The file ends with an empty IEND chunk and its CRC.
+    let n = png.len;
+    assert(png[n - 8] == 'I' && png[n - 7] == 'E' && png[n - 6] == 'N' && png[n - 5] == 'D');
+    assert(png[n - 4] == 0xAE && png[n - 3] == 0x42 && png[n - 2] == 0x60 && png[n - 1] == 0x82);
+    // A bad scale or a too wide image is a fault and leaves the buffer as it was.
+    var keep: u8[>..] = [7];
+    assert(otp::qr_png(keep, "a", 0) == otp::ERR_BAD_SCALE && keep.len == 1);
+    assert(otp::qr_png(keep, "a", 1000) == otp::ERR_BAD_SCALE && keep.len == 1);
+    assert(otp::qr_png(keep, "", 3) == otp::ERR_BAD_LENGTH && keep.len == 1);
+}
+
+fn test_uri_image() {
+    var out: u8[>..] = [];
+    assert(otp::uri_build_image(out, "JBSWY3DPEHPK3PXP", "Example", "u", 0, false, otp::default_params(),
+                                "https://example.com/a.png") == otp::ERR_OK);
+    assert(out == "otpauth://totp/Example:u?secret=JBSWY3DPEHPK3PXP&issuer=Example&image=https%3A%2F%2Fexample.com%2Fa.png");
+    var parts: u8[>..] = [];
+    let code, r = otp::uri_parse(out[..], parts);
+    assert(code == otp::ERR_OK);
+    assert(parts[r.image_at..r.image_at + r.image_len] == "https://example.com/a.png");
+    // Other schemes, a missing host or path, and a space are faults.
+    var keep: u8[>..] = [9];
+    assert(otp::uri_build_image(keep, "JBSWY3DPEHPK3PXP", "E", "u", 0, false, otp::default_params(),
+                                "javascript:alert(1)") == otp::ERR_BAD_URI && keep.len == 1);
+    assert(otp::uri_build_image(keep, "JBSWY3DPEHPK3PXP", "E", "u", 0, false, otp::default_params(),
+                                "https://example.com") == otp::ERR_BAD_URI && keep.len == 1);
+    assert(otp::uri_build_image(keep, "JBSWY3DPEHPK3PXP", "E", "u", 0, false, otp::default_params(),
+                                "https://a b/c") == otp::ERR_BAD_URI && keep.len == 1);
+    let e1, _ = otp::uri_parse("otpauth://totp/u?secret=JBSWY3DPEHPK3PXP&image=http%3A%2F%2Fa.b%2Fc", keep);
+    assert(e1 == otp::ERR_BAD_URI && keep.len == 1);
+    let e2, _ = otp::uri_parse("otpauth://totp/u?secret=JBSWY3DPEHPK3PXP&image=https%3A%2F%2Fa.b%2Fc&image=https%3A%2F%2Fa.b%2Fc", keep);
+    assert(e2 == otp::ERR_BAD_URI && keep.len == 1);
+    let e3, _ = otp::uri_parse("otpauth://totp/u?secret=JBSWY3DPEHPK3PXP&image=data%3Atext%2Fhtml%2Cx", keep);
+    assert(e3 == otp::ERR_BAD_URI);
+}
+
 fn main() {
     test_rfc4226();
+    test_qr();
+    test_uri_image();
+    test_qr_png();
+    test_u64_counter();
+    test_random_hex();
     test_rfc6238();
     test_long_keys();
     test_sha512_lengths();
