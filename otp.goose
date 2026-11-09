@@ -66,21 +66,53 @@ struct Params {
     // The shortest secret that the package takes, in bytes. RFC 4226
     // asks for 16 bytes at least.
     min_secret: i64,
+    // True for the codes of Steam: SHA-1, and letters of the Steam
+    // alphabet in place of digits. The field digits must be 5.
+    steam: bool,
 }
 
 // default_params gives the rules of most authenticator apps: SHA-1, 6
 // digits, 30 seconds.
 fn default_params() -> Params {
-    return Params { algo: ALGO_SHA1, digits: 6, period: 30, t0: 0, min_secret: 16 };
+    return Params { algo: ALGO_SHA1, digits: 6, period: 30, t0: 0, min_secret: 16, steam: false };
+}
+
+// steam_params gives the rules of Steam Guard: SHA-1, 5 characters, 30
+// seconds. Steam takes no other count of characters.
+fn steam_params() -> Params {
+    return Params { algo: ALGO_SHA1, digits: 5, period: 30, t0: 0, min_secret: 16, steam: true };
+}
+
+// The alphabet of the codes of Steam.
+const STEAM_CHARS: const u8[:] = "23456789BCDFGHJKMNPQRTVWXY";
+
+// steam_char tells whether a byte is in the alphabet of Steam.
+fn steam_char(c: u8) -> bool {
+    for x in STEAM_CHARS { if x == c { return true; } }
+    return false;
 }
 
 // check_params tests the rules and the secret.
 fn check_params(secret: const u8[:], p: Params) -> i64 {
     if !algo_valid(p.algo) { return ERR_BAD_ALGORITHM; }
-    if p.digits < 6 || p.digits > 9 { return ERR_BAD_DIGITS; }
+    if p.steam {
+        // Both references give 5 characters and no other count. A code
+        // of fewer characters has too few values to guess against.
+        if p.algo != ALGO_SHA1 { return ERR_BAD_ALGORITHM; }
+        if p.digits != 5 { return ERR_BAD_DIGITS; }
+    } else if p.digits < 6 || p.digits > 9 {
+        return ERR_BAD_DIGITS;
+    }
     if p.period < 1 { return ERR_BAD_PERIOD; }
     if secret.len < 1 || secret.len < p.min_secret { return ERR_SHORT_SECRET; }
     return ERR_OK;
+}
+
+// pow26 gives 26 to the power of n.
+fn pow26(n: i64) -> i64 {
+    var v: i64 = 1;
+    for j in n { v = v * 26; }
+    return v;
 }
 
 // pow10 gives 10 to the power of n.
@@ -101,14 +133,29 @@ fn hotp_value(secret: const u8[:], counter: i64, p: Params) -> i64, i64 {
     let at = (mac[algo_size(p.algo) - 1] & 0x0F) as i64;
     let word = ((mac[at] & 0x7F) as i64) << 24 | (mac[at + 1] as i64) << 16 |
                (mac[at + 2] as i64) << 8 | mac[at + 3];
+    if p.steam { return word % pow26(p.digits), ERR_OK; }
     return word % pow10(p.digits), ERR_OK;
 }
 
-// digits_text writes the value with leading zeros into a fixed buffer.
-fn digits_text(value: i64, digits: i64) -> u8[9] {
+// digits_text writes the code into a fixed buffer. A number gets
+// leading zeros. A code of Steam takes its characters from the lowest
+// part of the value up, as Python pyotp and Rust totp-rs do.
+fn digits_text(value: i64, p: Params) -> u8[9] {
     var t: u8[9] = [0; 9];
     var v = value;
-    var j = digits;
+    // The count is at most 9 for every rule that check_params takes.
+    // The clamp keeps a direct call with a wild count inside the array.
+    var count = p.digits;
+    if count > 9 { count = 9; }
+    if count < 0 { count = 0; }
+    if p.steam {
+        for j in count {
+            t[j] = STEAM_CHARS[v % 26];
+            v = v / 26;
+        }
+        return t;
+    }
+    var j = count;
     while j > 0 {
         j = j - 1;
         t[j] = '0' + (v % 10) as! u8;
@@ -122,7 +169,7 @@ fn digits_text(value: i64, digits: i64) -> u8[9] {
 fn hotp(out: u8[>..]&, secret: const u8[:], counter: i64, p: Params) -> i64 {
     let v, fault = hotp_value(secret, counter, p);
     if fault != ERR_OK { return fault; }
-    let t = digits_text(v, p.digits);
+    let t = digits_text(v, p);
     for j in p.digits { out.push(t[j]); }
     return ERR_OK;
 }
@@ -135,6 +182,26 @@ fn totp_counter(now: i64, p: Params) -> i64, i64 {
     // I64_MAX + t0 give a difference that no i64 holds.
     if p.t0 < 0 && now > 9223372036854775807 + p.t0 { return 0, ERR_BAD_COUNTER; }
     return (now - p.t0) / p.period, ERR_OK;
+}
+
+// totp_next_step gives the time of the first second of the next step,
+// as Rust totp-rs next_step does.
+fn totp_next_step(now: i64, p: Params) -> i64, i64 {
+    let c, fault = totp_counter(now, p);
+    if fault != ERR_OK { return 0, fault; }
+    // The seconds left come from a difference that totp_counter checked.
+    // The next step is now plus those seconds, and it must not wrap.
+    let left = p.period - (now - p.t0) % p.period;
+    if now > 9223372036854775807 - left { return 0, ERR_BAD_COUNTER; }
+    return now + left, ERR_OK;
+}
+
+// totp_ttl gives the seconds that the code of the time stays valid, as
+// Rust totp-rs ttl does.
+fn totp_ttl(now: i64, p: Params) -> i64, i64 {
+    let c, fault = totp_counter(now, p);
+    if fault != ERR_OK { return 0, fault; }
+    return p.period - (now - p.t0) % p.period, ERR_OK;
 }
 
 // totp adds the text of the code for the time to the buffer.
@@ -152,7 +219,11 @@ fn verify_range(secret: const u8[:], code: const u8[:], first: i64, last: i64, p
     if fault != ERR_OK { return 0, fault; }
     if code.len != p.digits { return 0, ERR_BAD_CODE; }
     for x in code {
-        if x - '0' > 9 { return 0, ERR_BAD_CODE; }
+        if p.steam {
+            if !steam_char(x) { return 0, ERR_BAD_CODE; }
+        } else if x - '0' > 9 {
+            return 0, ERR_BAD_CODE;
+        }
     }
     var found: i64 = -1;
     var c = first;
@@ -160,7 +231,7 @@ fn verify_range(secret: const u8[:], code: const u8[:], first: i64, last: i64, p
     while c <= last {
         let v, f = hotp_value(secret, c, p);
         if f != ERR_OK { return 0, f; }
-        let t = digits_text(v, p.digits);
+        let t = digits_text(v, p);
         var diff: u8 = 0;
         for j in p.digits { diff |= t[j] ^ code[j]; }
         if diff == 0 && found < 0 { found = c; }

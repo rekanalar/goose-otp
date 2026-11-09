@@ -345,6 +345,72 @@ fn test_uri_round_trip() {
     assert(secret == s);
 }
 
+fn test_steam() {
+    // pyotp.contrib.Steam and Rust totp-rs give the same codes.
+    let s = "12345678901234567890";
+    let p = otp::steam_params();
+    totp_is(s, 0, p, "GG5F5");
+    totp_is(s, 59, p, "PV9M4");
+    totp_is(s, 1111111109, p, "PY4YB");
+    // Verify takes letters of the Steam alphabet only.
+    let c, f = otp::totp_verify(s, "PV9M4", 59, 0, 0, p);
+    assert(f == otp::ERR_OK && c == 1);
+    let c2, f2 = otp::totp_verify(s, "PV9M0", 59, 0, 0, p);
+    assert(f2 == otp::ERR_BAD_CODE);
+    let c3, f3 = otp::totp_verify(s, "pv9m4", 59, 0, 0, p);
+    assert(f3 == otp::ERR_BAD_CODE);
+    // The rules of Steam.
+    var bad = p;
+    bad.algo = otp::ALGO_SHA256;
+    var out: u8[>..] = [];
+    assert(otp::hotp(out, s, 0, bad) == otp::ERR_BAD_ALGORITHM);
+    bad = p;
+    bad.digits = 6;
+    assert(otp::hotp(out, s, 0, bad) == otp::ERR_BAD_DIGITS);
+    bad.digits = 1;
+    assert(otp::hotp(out, s, 0, bad) == otp::ERR_BAD_DIGITS);
+    bad.digits = 0;
+    assert(otp::hotp(out, s, 0, bad) == otp::ERR_BAD_DIGITS);
+    // The number of a Steam code is the value below 26 to the power of 5.
+    let v, vf = otp::hotp_value(s, 1, p);
+    assert(vf == otp::ERR_OK && v < 11881376);
+    // A direct call with a wild count stays inside the array.
+    var wp = otp::default_params();
+    wp.digits = 20;
+    let wild = otp::digits_text(5, wp);
+    assert(wild[8] == '5');
+    assert(out.len == 0);
+    // The URI has no form for Steam.
+    assert(otp::uri_build(out, "JBSWY3DPEHPK3PXP", "A", "u", 0, false, p) == otp::ERR_BAD_ALGORITHM);
+}
+
+fn test_step_time() {
+    let p = otp::default_params();
+    let n, f = otp::totp_next_step(59, p);
+    assert(f == otp::ERR_OK && n == 60);
+    let n2, f2 = otp::totp_next_step(60, p);
+    assert(n2 == 90);
+    let t, g = otp::totp_ttl(59, p);
+    assert(g == otp::ERR_OK && t == 1);
+    let t2, g2 = otp::totp_ttl(60, p);
+    assert(t2 == 30);
+    var q = p;
+    q.t0 = 10;
+    let t3, g3 = otp::totp_ttl(10, q);
+    assert(t3 == 30);
+    let t4, g4 = otp::totp_ttl(9, q);
+    assert(g4 == otp::ERR_BAD_COUNTER);
+    // A negative t0 gives the seconds and the step with no overflow.
+    var neg = p;
+    neg.t0 = -1;
+    let n4, f4 = otp::totp_next_step(0, neg);
+    assert(f4 == otp::ERR_OK && n4 == 29);
+    let t5, g5 = otp::totp_ttl(0, neg);
+    assert(g5 == otp::ERR_OK && t5 == 29);
+    let n3, f3 = otp::totp_next_step(9223372036854775807, p);
+    assert(f3 == otp::ERR_BAD_COUNTER);
+}
+
 fn test_overflow() {
     let s = "12345678901234567890";
     let p = otp::default_params();
@@ -409,6 +475,8 @@ fn main() {
     test_uri_round_trip();
     test_uri_hostile();
     test_overflow();
+    test_steam();
+    test_step_time();
     test_secret_text();
     print("all otp tests pass\n");
 }

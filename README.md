@@ -7,7 +7,7 @@ One-time passwords for Goose. The package builds and checks the codes of HOTP (R
 ## Install
 
 ```goose
-import otp from "rekanalar/goose-otp@v0.2.0";
+import otp from "rekanalar/goose-otp@v0.3.0";
 ```
 
 The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the random source. It depends on `rekanalar/goose-encoding@v1.0.0` for base32. Declare both imports in the root file of your program.
@@ -16,9 +16,9 @@ The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the rand
 
 | Library | What the package matches |
 |---|---|
-| Python `pyotp` | `HOTP.at`, `TOTP.at`, `verify` with a window, `random_base32` |
+| Python `pyotp` | `HOTP.at`, `TOTP.at`, `verify` with a window, `random_base32`, `contrib.Steam` |
 | Go `pquerna/otp` | SHA-1, SHA-256 and SHA-512, 6 to 8 digits, `ValidateCustom` |
-| Rust `totp-rs` | The minimum length of a secret, the check with a skew |
+| Rust `totp-rs` | The minimum length of a secret, the check with a skew, `ttl`, `next_step`, Steam codes |
 | Node `otplib` | `window` and the delta of the match |
 
 ## Features
@@ -29,6 +29,8 @@ The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the rand
 - **Verify with a window.** The call gives the counter that matched. The caller stores it and refuses a reuse.
 - **Base32 secrets.** The package reads the text that an app shows: either case, with spaces, with no padding.
 - **Random secrets.** The bytes come from the random source of the operating system.
+- **Steam codes.** Five letters of the Steam alphabet, as `pyotp` and `totp-rs` give them.
+- **The time left.** `totp_ttl` gives the seconds that a code stays valid. `totp_next_step` gives the start of the next step.
 - **The `otpauth://` URI.** Build and parse the key URI of Google Authenticator, for TOTP and HOTP.
 
 ## API
@@ -38,6 +40,8 @@ The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the rand
 | `default_params()` | The rules of most apps: SHA-1, 6 digits, 30 seconds |
 | `hotp(out, secret, counter, p)` | Adds the text of the code to `out`. Gives a code |
 | `totp(out, secret, now, p)` | The same for a time in seconds since 1970 |
+| `steam_params()` | The rules of Steam: SHA-1, 5 characters, 30 seconds. Use them with `hotp`, `totp` and the verify calls |
+| `totp_ttl(now, p)`, `totp_next_step(now, p)` | The seconds left in the step, and the time of the next step |
 | `hotp_value`, `totp_counter` | The number of a code, and the step of a time |
 | `hotp_verify(secret, code, counter, ahead, p)` | Gives the counter that matched, and a code |
 | `totp_verify(secret, code, now, back, ahead, p)` | Gives the step that matched, and a code |
@@ -58,6 +62,7 @@ The package depends on `kaitk/goose-hash@v0.0.4` for SHA-1, SHA-256 and the rand
 | `period` | The seconds of one TOTP step | 30 |
 | `t0` | The time of step 0, in seconds since 1970 | 0 |
 | `min_secret` | The shortest secret in bytes | 16 |
+| `steam` | Steam codes: SHA-1 only, and `digits` must be 5 | false |
 
 ### The codes
 
@@ -85,7 +90,7 @@ A call that fails leaves the buffer of the caller as it was.
 import std;
 import hash from "github.com/kaitk/goose-hash@v0.0.4";
 import encoding from "rekanalar/goose-encoding@v1.0.0";
-import otp from "rekanalar/goose-otp@v0.2.0";
+import otp from "rekanalar/goose-otp@v0.3.0";
 
 fn main() {
     var secret: u8[>..] = [];
@@ -118,7 +123,8 @@ Risks that stay: the package cannot stop a caller from trying many codes.
 - **The URI holds no `image` and no `encoder`.** `pyotp` writes the key `image` and reads `encoder=steam`. The package refuses both.
 - **Digits go to 9 in a URI.** `pyotp` takes 6, 7 and 8 only. The Key Uri Format wiki names 6 to 8. The package takes 6 to 9, as for a code.
 - **The URI build checks the form of the secret.** It does not check the minimum length in bytes. `uri_parse` does the same.
-- **No Steam codes.** `pyotp` and `totp-rs` hold a Steam variant. The package does not.
+- **Steam has no URI.** `pyotp` reads the key `encoder=steam`. `totp-rs` reads the host `steam` and the algorithm `STEAM`. No standard fixes the form, so the package builds none and refuses to read one.
+- **The rules hold a new field.** The field `steam` is new in `Params`. A program that builds `Params` with a literal must set it. `default_params` needs no change.
 - **No MD5.** `pquerna/otp` takes MD5. The package refuses it. MD5 is broken and no app needs it.
 - **Digits from 6 to 9.** `pyotp` takes any count. Go `pquerna/otp` takes 6, 7 and 8. A 31 bit value holds 10 digits with a bias, so the package stops at 9.
 - **A counter is a signed 64 bit number.** RFC 4226 holds an unsigned 64 bit counter. A counter of 2 to the power of 63 or more is not possible.

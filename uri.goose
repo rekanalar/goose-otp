@@ -182,6 +182,8 @@ fn uri_build(out: u8[>..]&, secret_text: const u8[:], issuer: const u8[:], name:
              counter: i64, has_counter: bool, p: Params) -> i64 {
     if secret_text.len == 0 { return ERR_SHORT_SECRET; }
     if issuer.len == 0 && name.len == 0 { return ERR_NO_ISSUER; }
+    // The URI of Steam is not part of the package.
+    if p.steam { return ERR_BAD_ALGORITHM; }
     if p.algo < ALGO_SHA1 || p.algo > ALGO_SHA512 { return ERR_BAD_ALGORITHM; }
     if p.digits < 6 || p.digits > 9 { return ERR_BAD_DIGITS; }
     if !has_counter && p.period < 1 { return ERR_BAD_PERIOD; }
